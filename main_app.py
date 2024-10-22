@@ -1,6 +1,7 @@
 import os
 os.system("wget https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx")
 os.system("pip install onnxruntime imageio")
+import os
 import cv2
 import gradio as gr
 import torch
@@ -15,7 +16,7 @@ from PIL import Image
 
 import requests
 
-def box(x1, y1, x2, y2, path, channel):
+def box(x1, y1, x2, y2, path):
 
     data = {
         "x1": x1,
@@ -23,26 +24,12 @@ def box(x1, y1, x2, y2, path, channel):
         "x2": x2,
         "y2": y2,
         "path": path,
-        "mask_channel": channel
     }
-    url = "http://172.70.10.53:8005/box_mask"
+    url = "http://192.168.41.106:8005/box"
 
     res = requests.post(url, json=data)
     
-    with open('./data/data_mask.jpg', "wb") as f:
-        f.write(res.content)
-    return res.content
-
-def point(x,y,path):
-    data={
-        'x': x,
-        'y': y,
-        'path': path
-    }
-    url = "http://172.70.10.53:8005/point"
-
-    res = requests.post(url, json=data)
-    with open('./data/data_mask.jpg', "wb") as f:
+    with open('./data/data_mask_by_box.jpg', "wb") as f:
         f.write(res.content)
     return res.content
 
@@ -119,6 +106,7 @@ def prepare_img_and_mask(image, mask, device, pad_out_to_modulo=8, scale_factor=
     return out_image, out_mask
 
 
+
 def predict(jpg, msk):
 
     imagex = Image.open(jpg)
@@ -136,43 +124,78 @@ def predict(jpg, msk):
     output = output.resize(imagex.size)
     output.save("./dataout/data_mask.jpg")
 
+
 def extract_brush_strokes(image_dict):
     # 提取用户涂抹的图层
     layers = image_dict['layers'][0]  # 假设只有一个图层，取第一个
-    # 获取图层中的透明度（Alpha 通道），即第4个通道
+
     alpha_channel = layers[:, :, 3]  # 获取图层的Alpha通道
-    # 创建一个蒙版，标记非透明的区域（即用户涂抹的区域）
+    # 创建一个mask模板，标记非透明的区域（即用户涂抹的区域）
     mask = alpha_channel > 0  # True表示用户涂抹的区域
     # 将蒙版转换为图像形式
     mask_img = Image.fromarray(np.uint8(mask) * 255, mode="L")  # 转换为灰度图像
     mask_img.save('./data/data_mask.jpg')
 
+def get_bounding_box(image: np.ndarray):
+    """
+    获取涂抹区域的最小边界框(x_min, y_min, x_max, y_max)，分别表示边界框的左上角和右下角的坐标。
+    """
+    # 假设涂抹区域是非零值，可以是二值图像或其他格式
+    # 对于RGBA图像，可以取alpha通道来判断哪些区域被涂抹
+    if image.shape[-1] == 4:  # 如果是RGBA图像
+        smudge_mask = image[..., 3] > 0  # 获取Alpha通道非透明区域
+    else:
+        smudge_mask = image > 0  # 假设其他通道非零值表示涂抹
 
-def infer(img_dict,channel):
+    # 获取所有涂抹区域的坐标点
+    coords = np.argwhere(smudge_mask)
+
+    if coords.shape[0] == 0:
+        raise ValueError("没有找到涂抹区域")
+
+    # 分别计算最小和最大坐标
+    y_min, x_min = coords.min(axis=0)  # 找到最小的x, y
+    y_max, x_max = coords.max(axis=0)  # 找到最大的x, y
+
+    return int(x_min), int(y_min), int(x_max), int(y_max)
+
+
+def infer(img_dict, channel):
     extract_brush_strokes(img_dict)
     img = img_dict['background']
+    img_box = img_dict['layers'][0]
+    x1,y1,x2,y2 = get_bounding_box(img_box)
     image_rgb = Image.fromarray(img).convert("RGB")
     imageio.imwrite("./data/data.jpg", np.array(image_rgb))
 
     # 使用矩形框
-    # box(143,1067,1415,2163,'/data2/qinxb/LaMa-Demo-ONNX/data/data.jpg', channel)
+    box(x1,y1,x2,y2,'/data2/qinxb/LaMa-Demo-ONNX/data/data.jpg')
 
-    predict("./data/data.jpg", "./data/data_mask.jpg")    
-    return "./dataout/data_mask.jpg","./data/data_mask.jpg"
+    predict("./data/data.jpg", "./data/data_mask.jpg")   
+     
+    return "./dataout/data_mask.jpg","./data/data_mask.jpg","./data/data_mask_by_box.jpg"
 
-with gr.Blocks() as iface:
-    gr.Markdown("# LaMa Image Inpainting")
 
-    with gr.Row():
-        #input_image = gr.Image(label="Input Image", type="numpy")
-        input_image = gr.ImageEditor(type="numpy")
-        with gr.Column():
-            channel = gr.Slider(minimum=0, maximum=3, value=0, step=1,label="Select a mask channel")
-            btn_infer = gr.Button("Run")
-    with gr.Row():
-        output_inpainted = gr.Image(type="filepath", label="Inpainted Image")
-        output_mask = gr.Image(type="filepath", label="Generated Mask")
-    # input_image.select(get_xy)
-    btn_infer.click(fn=infer, inputs=[input_image, channel], outputs=[output_inpainted, output_mask])
+if __name__=="__main__":
+
+    with gr.Blocks() as iface:
+        gr.Markdown("# LaMa Image Inpainting")
+
+        with gr.Row():
+            #input_image = gr.Image(label="Input Image", type="numpy")
+            input_image = gr.ImageEditor(type="numpy")
+            with gr.Column():
+                channel = gr.Slider(minimum=0, maximum=3, value=0, step=1,label="Select a mask channel")
+                btn_infer = gr.Button("Run")
+        with gr.Row():
+            output_inpainted = gr.Image(type="filepath", label="Inpainted Image")
+            output_mask = gr.Image(type="filepath", label="Generated Mask")
+        # with gr.Row():
+            output_mask_box = gr.Image(type="filepath", label="Mask Image")
+            # output_maskout = gr.Image(type="filepath", label="Maskout Image")
+        # input_image.select(get_xy)
+        btn_infer.click(fn=infer, inputs=[input_image, channel], outputs=[output_inpainted, output_mask,output_mask_box])
+
+    iface.launch(server_name="0.0.0.0", server_port=8006)
 
 iface.launch(server_name="0.0.0.0", server_port=8006)
