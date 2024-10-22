@@ -1,4 +1,6 @@
 import os
+os.system("wget https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx")
+os.system("pip install onnxruntime imageio")
 import cv2
 import gradio as gr
 import torch
